@@ -1,0 +1,224 @@
+% Classification and Filtering Method Description
+% For inclusion in scientific publication
+% 
+% Required packages in your main document preamble:
+% \usepackage{amsmath, amssymb}
+% \usepackage{tikz}
+% \usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds}
+
+\subsection{Large-Scale Image Classification and Filtering Pipeline}
+\label{sec:classification-filtering}
+
+\subsubsection{Overview}
+
+We developed an automated pipeline for filtering and classifying large-scale image datasets based on scene type and atmospheric conditions. The pipeline leverages OpenAI's Contrastive Language-Image Pre-training (CLIP) model~\cite{radford2021learning} (ViT-B/32 architecture) for zero-shot visual classification, enabling efficient processing of datasets containing millions of images without task-specific training.
+
+\subsubsection{Data Preprocessing}
+
+Source images are converted into an LMDB (Lightning Memory-Mapped Database) format for efficient random access during batch processing. Images are resized to a maximum dimension of 512 pixels while preserving aspect ratio and encoded as JPEG with 85\% quality to balance storage efficiency with visual fidelity. Parallel processing across multiple CPU workers accelerates the conversion, achieving throughput rates of 100--500 images per second.
+
+\subsubsection{Feature Extraction}
+
+For each image $I$, we extract a normalized feature embedding using CLIP's vision encoder:
+\begin{equation}
+    \mathbf{v} = \frac{f_\text{img}(I)}{\|f_\text{img}(I)\|_2}
+\end{equation}
+where $f_\text{img}: \mathcal{I} \rightarrow \mathbb{R}^d$ denotes the CLIP image encoder and $d=512$ is the embedding dimension. Similarly, for each text prompt $t$, we compute a normalized text embedding:
+\begin{equation}
+    \mathbf{t} = \frac{f_\text{txt}(t)}{\|f_\text{txt}(t)\|_2}
+\end{equation}
+where $f_\text{txt}: \mathcal{T} \rightarrow \mathbb{R}^d$ is the CLIP text encoder.
+
+\subsubsection{Two-Stage Hierarchical Classification}
+
+The classification process follows a two-stage hierarchical approach as illustrated in Figure~\ref{fig:pipeline-architecture}.
+
+\paragraph{Stage 1: Indoor/Outdoor Scene Classification}
+
+Each image is first classified as indoor or outdoor. We define prompt sets $\mathcal{P}_\text{out} = \{p_1^\text{out}, \ldots, p_5^\text{out}\}$ and $\mathcal{P}_\text{in} = \{p_1^\text{in}, \ldots, p_5^\text{in}\}$ containing semantically distinct descriptions for outdoor and indoor scenes, respectively. The scene classification score is computed as the maximum cosine similarity across all prompts:
+\begin{equation}
+    s_\text{out} = \max_{p \in \mathcal{P}_\text{out}} \langle \mathbf{v}, \mathbf{t}_p \rangle, \quad
+    s_\text{in} = \max_{p \in \mathcal{P}_\text{in}} \langle \mathbf{v}, \mathbf{t}_p \rangle
+\end{equation}
+where $\langle \cdot, \cdot \rangle$ denotes the cosine similarity (equivalent to dot product for unit vectors). The image is classified as outdoor if $s_\text{out} > s_\text{in}$. A calibrated confidence score is obtained via softmax:
+\begin{equation}
+    c_\text{scene} = \frac{\exp(s_\text{out})}{\exp(s_\text{out}) + \exp(s_\text{in})}
+\end{equation}
+
+\paragraph{Stage 2: Weather Condition Classification}
+
+Images classified as outdoor proceed to weather condition classification across $K=6$ atmospheric categories: $\mathcal{C} = \{\text{clear\_day}, \text{cloudy}, \text{rainy}, \text{snowy}, \text{night}, \text{dawn\_dusk}\}$. Each category $c \in \mathcal{C}$ is represented by a prompt set $\mathcal{P}_c = \{p_1^c, \ldots, p_5^c\}$. The category score is computed as:
+\begin{equation}
+    s_c = \max_{p \in \mathcal{P}_c} \langle \mathbf{v}, \mathbf{t}_p \rangle
+\end{equation}
+
+Temperature-scaled softmax normalization produces calibrated probability distributions:
+\begin{equation}
+    P(c \mid I) = \frac{\exp(\tau \cdot s_c)}{\sum_{c' \in \mathcal{C}} \exp(\tau \cdot s_{c'})}
+    \label{eq:weather-prob}
+\end{equation}
+where $\tau = 10$ is the temperature scaling parameter. The predicted weather category is:
+\begin{equation}
+    \hat{c} = \argmax_{c \in \mathcal{C}} P(c \mid I)
+\end{equation}
+
+\subsubsection{Fog Detection via Counter-Prompt Margin Scoring}
+
+To address visual ambiguity between fog, overcast clouds, and intentional blur, we employ a counter-prompt margin scoring approach. We define four prompt categories: fog ($\mathcal{P}_\text{fog}$), cloudy confounders ($\mathcal{P}_\text{cloud}$), blur confounders ($\mathcal{P}_\text{blur}$), and clear conditions ($\mathcal{P}_\text{clear}$). For each category, we compute averaged text embeddings:
+\begin{equation}
+    \bar{\mathbf{t}}_\text{fog} = \frac{1}{|\mathcal{P}_\text{fog}|} \sum_{p \in \mathcal{P}_\text{fog}} \mathbf{t}_p
+\end{equation}
+
+The fog margin score is defined as:
+\begin{equation}
+    m_\text{fog} = \langle \mathbf{v}, \bar{\mathbf{t}}_\text{fog} \rangle - \max\left(\langle \mathbf{v}, \bar{\mathbf{t}}_\text{cloud} \rangle, \langle \mathbf{v}, \bar{\mathbf{t}}_\text{blur} \rangle, \langle \mathbf{v}, \bar{\mathbf{t}}_\text{clear} \rangle\right)
+    \label{eq:fog-margin}
+\end{equation}
+
+An image is classified as foggy when the margin exceeds a threshold $\theta_\text{fog}$:
+\begin{equation}
+    \text{is\_foggy} = \mathbb{1}[m_\text{fog} \geq \theta_\text{fog}]
+\end{equation}
+where the default threshold $\theta_\text{fog} = 0.15$ was empirically determined.
+
+\subsubsection{Quality Filtering}
+
+Final dataset curation applies confidence and margin thresholds to ensure classification reliability. Let $P^{(1)}$ and $P^{(2)}$ denote the highest and second-highest category probabilities from Equation~\ref{eq:weather-prob}. An image is retained if:
+\begin{equation}
+    P^{(1)} > \theta_\text{conf} \quad \text{and} \quad (P^{(1)} - P^{(2)}) > \theta_\text{margin}
+\end{equation}
+where $\theta_\text{conf} = 0.3$ and $\theta_\text{margin} = 0.1$ are the confidence and margin thresholds, respectively.
+
+% ============================================================================
+% PIPELINE ARCHITECTURE FIGURE
+% ============================================================================
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm and 1.5cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=2.5cm, minimum height=0.8cm, align=center, font=\small},
+    process/.style={box, fill=blue!15},
+    decision/.style={diamond, draw, aspect=2, fill=orange!20, font=\small, inner sep=1pt},
+    data/.style={box, fill=green!15},
+    output/.style={box, fill=purple!15},
+    arrow/.style={-{Stealth[scale=0.8]}, thick}
+]
+
+% Input
+\node[data] (input) {Source Images\\(SA-1B / LAION)};
+
+% Preprocessing
+\node[process, below=of input] (lmdb) {LMDB Conversion\\+ Resizing};
+
+% CLIP Encoding
+\node[process, below=of lmdb] (clip) {CLIP ViT-B/32\\Feature Extraction};
+
+% Indoor/Outdoor Decision
+\node[decision, below=1.5cm of clip] (io-decision) {Outdoor?};
+
+% Indoor output
+\node[output, left=2cm of io-decision] (indoor) {Indoor\\(Rejected)};
+
+% Weather Classification
+\node[process, below=1.5cm of io-decision] (weather) {Weather\\Classification};
+
+% Fog Detection
+\node[process, right=2cm of weather] (fog) {Fog Detection\\(Margin Scoring)};
+
+% Quality Filter
+\node[decision, below=1.5cm of weather] (quality) {Quality\\Filter?};
+
+% Uncategorized
+\node[output, left=2cm of quality] (uncat) {Uncategorized};
+
+% Final Output
+\node[output, below=1.5cm of quality] (output) {Categorized Dataset\\(6 Weather Classes + Fog)};
+
+% Arrows
+\draw[arrow] (input) -- (lmdb);
+\draw[arrow] (lmdb) -- (clip);
+\draw[arrow] (clip) -- (io-decision);
+\draw[arrow] (io-decision) -- node[above, font=\scriptsize] {No} (indoor);
+\draw[arrow] (io-decision) -- node[right, font=\scriptsize] {Yes} (weather);
+\draw[arrow] (weather) -- (fog);
+\draw[arrow] (fog) |- (quality);
+\draw[arrow] (weather) -- (quality);
+\draw[arrow] (quality) -- node[above, font=\scriptsize] {Fail} (uncat);
+\draw[arrow] (quality) -- node[right, font=\scriptsize] {Pass} (output);
+
+\end{tikzpicture}
+\caption{Architecture of the classification and filtering pipeline. Images are first converted to LMDB format, then processed through CLIP for feature extraction. A two-stage classification first separates indoor from outdoor scenes, then classifies outdoor images into weather categories. Parallel fog detection using counter-prompt margin scoring identifies foggy conditions. Quality filtering ensures reliable classifications before final dataset assembly.}
+\label{fig:pipeline-architecture}
+\end{figure}
+
+% ============================================================================
+% OPTIONAL: Detailed scoring diagram
+% ============================================================================
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=0.8cm,
+    embed/.style={rectangle, draw, rounded corners, fill=blue!10, minimum width=1.8cm, minimum height=0.6cm, font=\footnotesize},
+    prompt/.style={rectangle, draw, rounded corners, fill=green!10, minimum width=2.2cm, minimum height=0.5cm, font=\scriptsize},
+    score/.style={circle, draw, fill=yellow!20, minimum size=0.6cm, font=\scriptsize},
+    op/.style={rectangle, draw, fill=gray!10, font=\scriptsize}
+]
+
+% Image embedding
+\node[embed] (img) {$\mathbf{v}$ (Image)};
+
+% Prompt embeddings
+\node[prompt, right=2.5cm of img, yshift=1.2cm] (p1) {$\mathbf{t}_{p_1}$ ``sunny day...''};
+\node[prompt, below=0.3cm of p1] (p2) {$\mathbf{t}_{p_2}$ ``clear weather...''};
+\node[prompt, below=0.3cm of p2] (p3) {$\mathbf{t}_{p_3}$ ``blue sky...''};
+\node[prompt, below=0.3cm of p3] (p4) {$\vdots$};
+\node[prompt, below=0.3cm of p4] (p5) {$\mathbf{t}_{p_5}$ ``bright light...''};
+
+% Similarity scores
+\node[score, right=1.5cm of p1] (s1) {$s_1$};
+\node[score, right=1.5cm of p2] (s2) {$s_2$};
+\node[score, right=1.5cm of p3] (s3) {$s_3$};
+\node[score, right=1.5cm of p5] (s5) {$s_5$};
+
+% Max operation
+\node[op, right=1cm of s3] (max) {$\max$};
+
+% Final score
+\node[embed, right=1cm of max, fill=orange!20] (final) {$s_c$};
+
+% Arrows
+\draw[-{Stealth}] (img.east) -- ++(0.5,0) |- (p1.west);
+\draw[-{Stealth}] (img.east) -- ++(0.5,0) |- (p2.west);
+\draw[-{Stealth}] (img.east) -- ++(0.5,0) |- (p3.west);
+\draw[-{Stealth}] (img.east) -- ++(0.5,0) |- (p5.west);
+
+\draw[-{Stealth}] (p1) -- node[above, font=\tiny] {$\langle\cdot,\cdot\rangle$} (s1);
+\draw[-{Stealth}] (p2) -- (s2);
+\draw[-{Stealth}] (p3) -- (s3);
+\draw[-{Stealth}] (p5) -- (s5);
+
+\draw[-{Stealth}] (s1.east) -- ++(0.3,0) |- (max.west);
+\draw[-{Stealth}] (s2.east) -- ++(0.3,0) |- (max.west);
+\draw[-{Stealth}] (s3) -- (max);
+\draw[-{Stealth}] (s5.east) -- ++(0.3,0) |- (max.west);
+
+\draw[-{Stealth}] (max) -- (final);
+
+\end{tikzpicture}
+\caption{Prompt ensemble scoring for a single weather category. The image embedding $\mathbf{v}$ is compared against multiple text prompt embeddings via cosine similarity. The maximum similarity across all prompts yields the final category score $s_c$, providing robustness against prompt-specific biases.}
+\label{fig:prompt-scoring}
+\end{figure}
+
+% ============================================================================
+% Bibliography entry (add to your .bib file)
+% ============================================================================
+% @inproceedings{radford2021learning,
+%   title={Learning transferable visual models from natural language supervision},
+%   author={Radford, Alec and Kim, Jong Wook and Hallacy, Chris and Ramesh, Aditya and Goh, Gabriel and Agarwal, Sandhini and Sastry, Girish and Askell, Amanda and Mishkin, Pamela and Clark, Jack and others},
+%   booktitle={International Conference on Machine Learning},
+%   pages={8748--8763},
+%   year={2021},
+%   organization={PMLR}
+% }

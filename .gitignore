@@ -1,0 +1,15 @@
+venv
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+*.log
+.env
+cache/
+output*/
+sa1b_outdoor_weather/
+filtered_outdoor_dataset/
+labels/
+mappings/
+missclassified/
+tasksync/tasksync/
