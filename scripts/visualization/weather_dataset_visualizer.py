@@ -62,6 +62,7 @@ class WeatherDatasetVisualizer:
         self.parent_folder = Path(parent_folder)
         self.datasets = {}
         self.weather_categories = ['clear_day', 'foggy', 'snowy', 'night', 'rainy', 'dawn_dusk', 'cloudy']
+        self.excluded_datasets = ['SEVERE', 'SEVERE_WEATHER']  # Datasets to ignore
         self.output_folder = Path(parent_folder) / 'analysis_output'
         self.output_folder.mkdir(exist_ok=True)
 
@@ -80,9 +81,21 @@ class WeatherDatasetVisualizer:
             'cloudy': '#778899'
         }
 
+        # Display names for weather categories (proper names)
+        self.category_display_names = {
+            'clear_day': 'Clear Day',
+            'cloudy': 'Cloudy',
+            'dawn_dusk': 'Dawn/Dusk',
+            'foggy': 'Foggy',
+            'night': 'Night',
+            'rainy': 'Rainy',
+            'snowy': 'Snowy'
+        }
+
     def discover_datasets(self):
         """
-        Discover all subdirectories containing a 'categories' folder.
+        Discover all subdirectories containing weather category folders.
+        Checks for 'images', 'categories', or 'categories/original_size' folders.
 
         Returns:
             list: Names of discovered datasets
@@ -90,11 +103,52 @@ class WeatherDatasetVisualizer:
         discovered = []
         for subdir in self.parent_folder.iterdir():
             if subdir.is_dir():
-                categories_path = subdir / 'images'
-                if categories_path.exists():
-                    discovered.append(subdir.name)
+                # Skip excluded datasets
+                if subdir.name in self.excluded_datasets:
+                    continue
+                # Check various possible folder structures
+                possible_paths = [
+                    subdir / 'images',
+                    subdir / 'categories' / 'original_size',
+                    subdir / 'categories',
+                ]
+                for path in possible_paths:
+                    if path.exists() and path.is_dir():
+                        # Check if it contains any weather category subfolders
+                        has_weather_category = False
+                        for category in self.weather_categories:
+                            if (path / category).exists():
+                                has_weather_category = True
+                                break
+                        if has_weather_category:
+                            discovered.append(subdir.name)
+                            break  # Found valid path, don't check other paths
         print(f"Discovered {len(discovered)} datasets: {discovered}")
         return discovered
+
+    def _get_images_root(self, dataset_name):
+        """
+        Find the correct images root path for a dataset.
+        Checks for 'images', 'categories/original_size', or 'categories' folders.
+
+        Parameters:
+            dataset_name (str): Name of the dataset
+
+        Returns:
+            Path: Path to the images root, or None if not found
+        """
+        possible_paths = [
+            self.parent_folder / dataset_name / 'images',
+            self.parent_folder / dataset_name / 'categories' / 'original_size',
+            self.parent_folder / dataset_name / 'categories',
+        ]
+        for path in possible_paths:
+            if path.exists() and path.is_dir():
+                # Verify it has at least one weather category
+                for category in self.weather_categories:
+                    if (path / category).exists():
+                        return path
+        return None
 
     def load_dataset_stats(self, dataset_name):
         """
@@ -106,8 +160,8 @@ class WeatherDatasetVisualizer:
         Returns:
             dict: Dataset statistics including total_images, total_categories, and category_counts
         """
-        images_root = self.parent_folder / dataset_name / 'images'
-        if not images_root.exists():
+        images_root = self._get_images_root(dataset_name)
+        if images_root is None:
             return None
 
         img_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.gif', '.webp'}
@@ -159,7 +213,10 @@ class WeatherDatasetVisualizer:
         Returns:
             list: List of metadata dictionaries
         """
-        category_path = self.parent_folder / dataset_name / 'images' / category
+        images_root = self._get_images_root(dataset_name)
+        if images_root is None:
+            return []
+        category_path = images_root / category
         metadata_list = []
 
         if not category_path.exists():
@@ -547,24 +604,36 @@ class WeatherDatasetVisualizer:
             print("No percentage data available for plotting")
             return
 
+        # Sort datasets alphabetically
+        sorted_indices = sorted(range(len(dataset_names)), key=lambda i: dataset_names[i].lower())
+        dataset_names = [dataset_names[i] for i in sorted_indices]
+        for category in percentage_data:
+            percentage_data[category] = [percentage_data[category][i] for i in sorted_indices]
+
+        # Sort weather categories alphabetically by display name
+        sorted_categories = sorted(self.weather_categories, 
+                                   key=lambda c: self.category_display_names.get(c, c).lower())
+
         # Create stacked bar chart
         fig, ax = plt.subplots(figsize=(12, 6))
 
         bottom = np.zeros(len(dataset_names))
 
-        for category in self.weather_categories:
+        for category in sorted_categories:
             if category in percentage_data:
                 values = percentage_data[category]
                 color = self.category_colors.get(category, '#808080')
-                ax.bar(dataset_names, values, bottom=bottom, label=category, 
+                display_name = self.category_display_names.get(category, category)
+                ax.bar(dataset_names, values, bottom=bottom, label=display_name, 
                       color=color, alpha=0.8, edgecolor='white', linewidth=1)
                 bottom += values
 
-        ax.set_xlabel('Dataset', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Percentage (%)', fontsize=12, fontweight='bold')
-        ax.set_title('Category Distribution (Percentage) - Stacked View', fontsize=14, fontweight='bold')
-        ax.legend(title='Weather Category', bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax.set_xlabel('Dataset', fontsize=16, fontweight='bold')
+        ax.set_ylabel('Percentage (%)', fontsize=16, fontweight='bold')
+        # No title (header removed as requested)
+        ax.legend(title='Weather Category', bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=12, title_fontsize=14)
         ax.set_ylim(0, 100)
+        ax.tick_params(axis='both', labelsize=14)
 
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
@@ -606,10 +675,14 @@ class WeatherDatasetVisualizer:
         datasets = conf_df['Dataset'].unique()
         data_by_dataset = [conf_df[conf_df['Dataset'] == ds]['Confidence'].values 
                           for ds in datasets]
-        bp1 = ax1.boxplot(data_by_dataset, labels=datasets, patch_artist=True)
-        for patch in bp1['boxes']:
-            patch.set_facecolor('#3498db')
-            patch.set_alpha(0.7)
+        # Filter out empty arrays
+        valid_datasets = [(ds, data) for ds, data in zip(datasets, data_by_dataset) if len(data) > 0]
+        if valid_datasets:
+            valid_labels, valid_data = zip(*valid_datasets)
+            bp1 = ax1.boxplot(valid_data, labels=valid_labels, patch_artist=True)
+            for patch in bp1['boxes']:
+                patch.set_facecolor('#3498db')
+                patch.set_alpha(0.7)
         ax1.set_xlabel('Dataset', fontweight='bold')
         ax1.set_ylabel('Confidence', fontweight='bold')
         ax1.set_title('Confidence Distribution by Dataset', fontweight='bold')
@@ -621,11 +694,15 @@ class WeatherDatasetVisualizer:
         categories = [cat for cat in self.weather_categories if cat in conf_df['Category'].unique()]
         data_by_category = [conf_df[conf_df['Category'] == cat]['Confidence'].values 
                            for cat in categories]
-        bp2 = ax2.boxplot(data_by_category, labels=categories, patch_artist=True)
-        for i, patch in enumerate(bp2['boxes']):
-            color = self.category_colors.get(categories[i], '#808080')
-            patch.set_facecolor(color)
-            patch.set_alpha(0.7)
+        # Filter out empty arrays
+        valid_categories = [(cat, data) for cat, data in zip(categories, data_by_category) if len(data) > 0]
+        if valid_categories:
+            valid_cat_labels, valid_cat_data = zip(*valid_categories)
+            bp2 = ax2.boxplot(valid_cat_data, labels=valid_cat_labels, patch_artist=True)
+            for i, patch in enumerate(bp2['boxes']):
+                color = self.category_colors.get(valid_cat_labels[i], '#808080')
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
         ax2.set_xlabel('Category', fontweight='bold')
         ax2.set_ylabel('Confidence', fontweight='bold')
         ax2.set_title('Confidence Distribution by Category', fontweight='bold')
@@ -647,14 +724,15 @@ class WeatherDatasetVisualizer:
 
         # 4. Violin plot by category
         ax4 = fig.add_subplot(gs[1, 1])
-        positions = range(len(categories))
-        parts = ax4.violinplot(data_by_category, positions=positions, showmeans=True, showmedians=True)
-        for i, pc in enumerate(parts['bodies']):
-            color = self.category_colors.get(categories[i], '#808080')
-            pc.set_facecolor(color)
-            pc.set_alpha(0.7)
-        ax4.set_xticks(positions)
-        ax4.set_xticklabels(categories, rotation=45, ha='right')
+        if valid_categories:
+            positions = range(len(valid_cat_labels))
+            parts = ax4.violinplot(valid_cat_data, positions=positions, showmeans=True, showmedians=True)
+            for i, pc in enumerate(parts['bodies']):
+                color = self.category_colors.get(valid_cat_labels[i], '#808080')
+                pc.set_facecolor(color)
+                pc.set_alpha(0.7)
+            ax4.set_xticks(positions)
+            ax4.set_xticklabels(valid_cat_labels, rotation=45, ha='right')
         ax4.set_xlabel('Category', fontweight='bold')
         ax4.set_ylabel('Confidence', fontweight='bold')
         ax4.set_title('Confidence Distribution (Violin Plot)', fontweight='bold')
