@@ -279,6 +279,101 @@ def test_combined_validation():
     print("=" * 60)
 
 
+def test_normal_adverse_ratio():
+    """Test the Normal/Adverse ratio calculation."""
+    print("\n" + "=" * 60)
+    print("Testing Normal/Adverse Ratio")
+    print("=" * 60)
+    
+    visualizer = WeatherDatasetVisualizer("/tmp")
+    
+    # Test 1: Equal normal and adverse
+    print("\nTest 1: Equal normal and adverse images")
+    equal_counts = {
+        'clear_day': 250,  # Normal
+        'cloudy': 250,     # Normal
+        'foggy': 100,      # Adverse
+        'snowy': 100,      # Adverse
+        'night': 100,      # Adverse
+        'rainy': 100,      # Adverse
+        'dawn_dusk': 100   # Adverse
+    }
+    result = visualizer.compute_normal_adverse_ratio(equal_counts)
+    print(f"  Normal: {result['normal_count']}, Adverse: {result['adverse_count']}, Ratio: {result['ratio']}")
+    assert result['normal_count'] == 500
+    assert result['adverse_count'] == 500
+    assert result['ratio'] == 1.0
+    print("  ✓ PASSED: Ratio = 1.0 for equal normal/adverse")
+    
+    # Test 2: More normal than adverse
+    print("\nTest 2: More normal than adverse images")
+    normal_heavy = {
+        'clear_day': 800,  # Normal
+        'cloudy': 200,     # Normal
+        'foggy': 100,      # Adverse
+        'snowy': 50,       # Adverse
+        'night': 50,       # Adverse
+        'rainy': 0,        # Adverse
+        'dawn_dusk': 0     # Adverse
+    }
+    result = visualizer.compute_normal_adverse_ratio(normal_heavy)
+    print(f"  Normal: {result['normal_count']}, Adverse: {result['adverse_count']}, Ratio: {result['ratio']}")
+    assert result['normal_count'] == 1000
+    assert result['adverse_count'] == 200
+    assert result['ratio'] == 5.0
+    print("  ✓ PASSED: Ratio = 5.0 (5x more normal)")
+    
+    # Test 3: No adverse images
+    print("\nTest 3: No adverse images (only normal)")
+    only_normal = {
+        'clear_day': 500,
+        'cloudy': 500,
+        'foggy': 0,
+        'snowy': 0,
+        'night': 0,
+        'rainy': 0,
+        'dawn_dusk': 0
+    }
+    result = visualizer.compute_normal_adverse_ratio(only_normal)
+    print(f"  Normal: {result['normal_count']}, Adverse: {result['adverse_count']}, Ratio: {result['ratio']}")
+    assert result['normal_count'] == 1000
+    assert result['adverse_count'] == 0
+    assert result['ratio'] == float('inf')
+    print("  ✓ PASSED: Ratio = inf when no adverse images")
+    
+    # Test 4: No normal images (only adverse)
+    print("\nTest 4: No normal images (only adverse)")
+    only_adverse = {
+        'clear_day': 0,
+        'cloudy': 0,
+        'foggy': 200,
+        'snowy': 200,
+        'night': 200,
+        'rainy': 200,
+        'dawn_dusk': 200
+    }
+    result = visualizer.compute_normal_adverse_ratio(only_adverse)
+    print(f"  Normal: {result['normal_count']}, Adverse: {result['adverse_count']}, Ratio: {result['ratio']}")
+    assert result['normal_count'] == 0
+    assert result['adverse_count'] == 1000
+    assert result['ratio'] == 0.0
+    print("  ✓ PASSED: Ratio = 0.0 when no normal images")
+    
+    # Test 5: Empty dataset
+    print("\nTest 5: Empty dataset")
+    empty = {cat: 0 for cat in visualizer.weather_categories}
+    result = visualizer.compute_normal_adverse_ratio(empty)
+    print(f"  Normal: {result['normal_count']}, Adverse: {result['adverse_count']}, Ratio: {result['ratio']}")
+    assert result['normal_count'] == 0
+    assert result['adverse_count'] == 0
+    assert math.isnan(result['ratio'])
+    print("  ✓ PASSED: Ratio = NaN for empty dataset")
+    
+    print("\n" + "=" * 60)
+    print("All Normal/Adverse Ratio tests PASSED!")
+    print("=" * 60)
+
+
 def run_all_tests():
     """Run all tests."""
     print("\n" + "#" * 70)
@@ -288,6 +383,7 @@ def run_all_tests():
     try:
         test_imbalance_ratio()
         test_normalized_shannon_entropy()
+        test_normal_adverse_ratio()
         test_combined_validation()
         
         print("\n" + "#" * 70)

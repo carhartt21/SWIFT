@@ -59,7 +59,7 @@ visualizer.generate_all_visualizations()
 
 ## Dataset Balance Metrics
 
-The visualizer computes two key metrics to quantify dataset balance:
+The visualizer computes three key metrics to quantify dataset balance:
 
 ### Imbalance Ratio (IR)
 
@@ -113,6 +113,33 @@ Skewed:  {clear_day: 1000, others: 0} → H_norm = 0.0
 Partial: {2 categories with 500 each, 5 empty} → H_norm = log(2)/log(7) ≈ 0.356
 ```
 
+### Normal/Adverse Weather Ratio
+
+Measures the balance between normal and adverse weather conditions.
+
+**Categories:**
+- **Normal:** `clear_day`, `cloudy`
+- **Adverse:** `foggy`, `snowy`, `night`, `rainy`, `dawn_dusk`
+
+**Formula:** `Ratio = Normal_Count / Adverse_Count`
+
+**Interpretation:**
+| Ratio Value | Meaning |
+|-------------|---------|
+| Ratio = 1.0 | Equal normal and adverse images |
+| Ratio > 1 | More normal than adverse (common in standard datasets) |
+| Ratio < 1 | More adverse than normal (useful for adverse weather training) |
+| Ratio = ∞ | No adverse weather images |
+| Ratio = 0 | No normal weather images |
+
+**Example:**
+```
+Counts: {clear_day: 800, cloudy: 200, foggy: 100, rainy: 200, ...}
+Normal = 800 + 200 = 1000
+Adverse = 100 + 200 + ... = 500
+Ratio = 1000 / 500 = 2.0  # 2x more normal than adverse
+```
+
 ### Relationship Between IR and H_norm
 
 | Scenario | IR | H_norm | Description |
@@ -127,8 +154,10 @@ Partial: {2 categories with 500 each, 5 empty} → H_norm = log(2)/log(7) ≈ 0.
 The `balance_metrics.png` plot includes:
 1. **Imbalance Ratio bar chart** - Red bars indicate IR=∞ (missing categories)
 2. **Normalized Shannon Entropy bar chart** - Higher values = more balanced
-3. **IR vs H_norm scatter plot** - Ideal position is lower-left (low IR, high H_norm)
-4. **Category coverage chart** - Shows how many of the 7 categories have data
+3. **Normal vs Adverse Ratio bar chart** - Shows the balance between normal and adverse weather
+4. **IR vs H_norm scatter plot** - Ideal position is lower-left (low IR, high H_norm)
+5. **Normal vs Adverse stacked bar chart** - Shows absolute counts of normal vs adverse
+6. **Category coverage chart** - Shows how many of the 7 categories have data
 
 ## Expected Directory Structure
 

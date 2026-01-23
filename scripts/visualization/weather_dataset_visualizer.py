@@ -462,6 +462,47 @@ class WeatherDatasetVisualizer:
 
         return h_norm
 
+    def compute_normal_adverse_ratio(self, category_counts):
+        """
+        Compute the ratio of normal to adverse weather images.
+
+        Normal weather: 'clear_day', 'cloudy'
+        Adverse weather: 'foggy', 'snowy', 'night', 'rainy', 'dawn_dusk'
+
+        Parameters:
+            category_counts (dict): Dictionary mapping category names to their counts.
+
+        Returns:
+            dict: Dictionary containing:
+                  - 'normal_count': Total count of normal weather images
+                  - 'adverse_count': Total count of adverse weather images  
+                  - 'ratio': normal_count / adverse_count
+                            (inf if adverse_count == 0, NaN if both are 0)
+
+        Example:
+            >>> counts = {'clear_day': 1000, 'cloudy': 500, 'foggy': 100, 'rainy': 200}
+            >>> result = self.compute_normal_adverse_ratio(counts)
+            >>> result['ratio']  # (1000 + 500) / (100 + 200) = 5.0
+        """
+        normal_categories = ['clear_day', 'cloudy']
+        adverse_categories = ['foggy', 'snowy', 'night', 'rainy', 'dawn_dusk']
+
+        normal_count = sum(category_counts.get(cat, 0) for cat in normal_categories)
+        adverse_count = sum(category_counts.get(cat, 0) for cat in adverse_categories)
+
+        if adverse_count == 0 and normal_count == 0:
+            ratio = float('nan')
+        elif adverse_count == 0:
+            ratio = float('inf')
+        else:
+            ratio = normal_count / adverse_count
+
+        return {
+            'normal_count': normal_count,
+            'adverse_count': adverse_count,
+            'ratio': ratio
+        }
+
     def create_dataset_balance_metrics_table(self):
         """
         Create a table with dataset-level balance metrics: Imbalance Ratio and Normalized Shannon Entropy.
@@ -477,12 +518,16 @@ class WeatherDatasetVisualizer:
 
                 ir = self.compute_imbalance_ratio(category_counts)
                 h_norm = self.compute_normalized_shannon_entropy(category_counts)
+                normal_adverse = self.compute_normal_adverse_ratio(category_counts)
 
                 metrics_data.append({
                     'Dataset': dataset_name,
                     'Total_Images': data['stats']['total_images'],
                     'Num_Categories_With_Data': sum(1 for c in self.weather_categories 
                                                      if category_counts.get(c, 0) > 0),
+                    'Normal_Images': normal_adverse['normal_count'],
+                    'Adverse_Images': normal_adverse['adverse_count'],
+                    'Normal_Adverse_Ratio': normal_adverse['ratio'],
                     'Imbalance_Ratio': ir,
                     'Normalized_Shannon_Entropy': h_norm
                 })
@@ -495,6 +540,9 @@ class WeatherDatasetVisualizer:
         )
         df['Normalized_Shannon_Entropy'] = df['Normalized_Shannon_Entropy'].apply(
             lambda x: 'NaN' if math.isnan(x) else round(x, 4)
+        )
+        df['Normal_Adverse_Ratio'] = df['Normal_Adverse_Ratio'].apply(
+            lambda x: 'inf' if x == float('inf') else ('NaN' if math.isnan(x) else round(x, 4))
         )
 
         output_path = self.output_folder / 'dataset_balance_metrics.csv'
@@ -1407,7 +1455,7 @@ class WeatherDatasetVisualizer:
 
     def plot_balance_metrics(self):
         """
-        Create plots visualizing the dataset balance metrics (IR and H_norm).
+        Create plots visualizing the dataset balance metrics (IR, H_norm, and Normal/Adverse ratio).
         """
         print("Generating balance metrics plots...")
 
@@ -1418,13 +1466,17 @@ class WeatherDatasetVisualizer:
                 category_counts = data['stats']['category_counts']
                 ir = self.compute_imbalance_ratio(category_counts)
                 h_norm = self.compute_normalized_shannon_entropy(category_counts)
+                normal_adverse = self.compute_normal_adverse_ratio(category_counts)
                 metrics_data.append({
                     'Dataset': dataset_name,
                     'Imbalance_Ratio': ir,
                     'H_norm': h_norm,
                     'Total_Images': data['stats']['total_images'],
                     'Num_Categories': sum(1 for c in self.weather_categories 
-                                          if category_counts.get(c, 0) > 0)
+                                          if category_counts.get(c, 0) > 0),
+                    'Normal_Count': normal_adverse['normal_count'],
+                    'Adverse_Count': normal_adverse['adverse_count'],
+                    'Normal_Adverse_Ratio': normal_adverse['ratio']
                 })
 
         if not metrics_data:
@@ -1438,9 +1490,12 @@ class WeatherDatasetVisualizer:
         ir_values = [d['Imbalance_Ratio'] for d in metrics_data]
         h_norm_values = [d['H_norm'] for d in metrics_data]
         num_categories = [d['Num_Categories'] for d in metrics_data]
+        normal_counts = [d['Normal_Count'] for d in metrics_data]
+        adverse_counts = [d['Adverse_Count'] for d in metrics_data]
+        na_ratios = [d['Normal_Adverse_Ratio'] for d in metrics_data]
 
-        # Create figure with 2x2 subplots
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        # Create figure with 2x3 subplots
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
         # 1. Imbalance Ratio bar chart
         ax1 = axes[0, 0]
@@ -1497,8 +1552,54 @@ class WeatherDatasetVisualizer:
         ax2.legend(loc='upper right')
         ax2.grid(axis='y', alpha=0.3)
 
-        # 3. IR vs H_norm scatter plot
-        ax3 = axes[1, 0]
+        # 3. Normal vs Adverse Ratio bar chart
+        ax3 = axes[0, 2]
+        # Replace inf/nan with displayable values
+        na_display = []
+        na_colors = []
+        max_finite_na = max([r for r in na_ratios if r != float('inf') and not math.isnan(r)], default=10)
+        na_cap = max_finite_na * 1.5 if max_finite_na > 1 else 10
+        
+        for ratio in na_ratios:
+            if ratio == float('inf'):
+                na_display.append(na_cap)
+                na_colors.append('#e74c3c')  # Red for infinite (no adverse images)
+            elif math.isnan(ratio):
+                na_display.append(0)
+                na_colors.append('#95a5a6')  # Gray for NaN
+            else:
+                na_display.append(ratio)
+                # Color based on balance: green if close to 1, yellow if moderate, orange if very imbalanced
+                if 0.5 <= ratio <= 2.0:
+                    na_colors.append('#2ecc71')  # Green - balanced
+                elif 0.2 <= ratio <= 5.0:
+                    na_colors.append('#f1c40f')  # Yellow - moderate
+                else:
+                    na_colors.append('#e67e22')  # Orange - imbalanced
+        
+        bars = ax3.bar(range(len(dataset_names)), na_display, color=na_colors, alpha=0.7, edgecolor='black')
+        
+        # Add value labels
+        for i, (bar, ratio) in enumerate(zip(bars, na_ratios)):
+            if ratio == float('inf'):
+                label = '∞'
+            elif math.isnan(ratio):
+                label = 'NaN'
+            else:
+                label = f'{ratio:.2f}'
+            ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
+                    label, ha='center', va='bottom', fontsize=9, fontweight='bold')
+        
+        ax3.axhline(y=1, color='blue', linestyle='--', linewidth=2, label='Equal Normal/Adverse (ratio=1)')
+        ax3.set_xticks(range(len(dataset_names)))
+        ax3.set_xticklabels(dataset_names, rotation=45, ha='right')
+        ax3.set_ylabel('Normal / Adverse Ratio', fontweight='bold')
+        ax3.set_title('Normal vs Adverse Weather Ratio\n(Normal: clear_day, cloudy)', fontweight='bold')
+        ax3.legend(loc='upper right')
+        ax3.grid(axis='y', alpha=0.3)
+
+        # 4. IR vs H_norm scatter plot
+        ax4 = axes[1, 0]
         # Filter out inf and nan for scatter plot
         valid_data = [(d['Dataset'], d['Imbalance_Ratio'], d['H_norm'], d['Num_Categories']) 
                       for d in metrics_data 
@@ -1506,49 +1607,67 @@ class WeatherDatasetVisualizer:
         
         if valid_data:
             names, irs, h_norms, num_cats = zip(*valid_data)
-            scatter = ax3.scatter(irs, h_norms, c=num_cats, cmap='viridis', 
+            scatter = ax4.scatter(irs, h_norms, c=num_cats, cmap='viridis', 
                                  s=150, alpha=0.7, edgecolors='black')
             
             # Add labels for each point
             for name, ir, h in zip(names, irs, h_norms):
-                ax3.annotate(name, (ir, h), textcoords="offset points", 
+                ax4.annotate(name, (ir, h), textcoords="offset points", 
                             xytext=(5, 5), ha='left', fontsize=8)
             
-            cbar = plt.colorbar(scatter, ax=ax3)
+            cbar = plt.colorbar(scatter, ax=ax4)
             cbar.set_label('Number of Categories', fontweight='bold')
         
-        ax3.axhline(y=1, color='green', linestyle='--', alpha=0.5, label='Perfect H_norm')
-        ax3.axvline(x=1, color='blue', linestyle='--', alpha=0.5, label='Perfect IR')
-        ax3.set_xlabel('Imbalance Ratio (IR)', fontweight='bold')
-        ax3.set_ylabel('Normalized Shannon Entropy (H_norm)', fontweight='bold')
-        ax3.set_title('IR vs H_norm\n(Lower-right = Ideal Balance)', fontweight='bold')
-        ax3.legend(loc='upper right')
-        ax3.grid(alpha=0.3)
+        ax4.axhline(y=1, color='green', linestyle='--', alpha=0.5, label='Perfect H_norm')
+        ax4.axvline(x=1, color='blue', linestyle='--', alpha=0.5, label='Perfect IR')
+        ax4.set_xlabel('Imbalance Ratio (IR)', fontweight='bold')
+        ax4.set_ylabel('Normalized Shannon Entropy (H_norm)', fontweight='bold')
+        ax4.set_title('IR vs H_norm\n(Lower-right = Ideal Balance)', fontweight='bold')
+        ax4.legend(loc='upper right')
+        ax4.grid(alpha=0.3)
 
-        # 4. Category coverage summary
-        ax4 = axes[1, 1]
+        # 5. Normal vs Adverse stacked bar chart
+        ax5 = axes[1, 1]
+        x = np.arange(len(dataset_names))
+        width = 0.6
+        
+        bars_normal = ax5.bar(x, normal_counts, width, label='Normal (clear_day, cloudy)', 
+                              color='#3498db', alpha=0.7, edgecolor='black')
+        bars_adverse = ax5.bar(x, adverse_counts, width, bottom=normal_counts, 
+                               label='Adverse (foggy, snowy, night, rainy, dawn_dusk)', 
+                               color='#e74c3c', alpha=0.7, edgecolor='black')
+        
+        ax5.set_xticks(x)
+        ax5.set_xticklabels(dataset_names, rotation=45, ha='right')
+        ax5.set_ylabel('Number of Images', fontweight='bold')
+        ax5.set_title('Normal vs Adverse Weather Images\n(Stacked)', fontweight='bold')
+        ax5.legend(loc='upper right', fontsize=8)
+        ax5.grid(axis='y', alpha=0.3)
+
+        # 6. Category coverage summary
+        ax6 = axes[1, 2]
         total_categories = len(self.weather_categories)
         coverage_pct = [n / total_categories * 100 for n in num_categories]
         
         colors = ['#2ecc71' if n == total_categories else '#f39c12' if n >= 5 else '#e74c3c' 
                   for n in num_categories]
         
-        bars = ax4.bar(range(len(dataset_names)), num_categories, color=colors, alpha=0.7, edgecolor='black')
-        ax4.axhline(y=total_categories, color='green', linestyle='--', linewidth=2, 
+        bars = ax6.bar(range(len(dataset_names)), num_categories, color=colors, alpha=0.7, edgecolor='black')
+        ax6.axhline(y=total_categories, color='green', linestyle='--', linewidth=2, 
                    label=f'Full Coverage ({total_categories} categories)')
         
         # Add percentage labels
         for bar, pct in zip(bars, coverage_pct):
-            ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
+            ax6.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
                     f'{pct:.0f}%', ha='center', va='bottom', fontsize=9)
         
-        ax4.set_xticks(range(len(dataset_names)))
-        ax4.set_xticklabels(dataset_names, rotation=45, ha='right')
-        ax4.set_ylabel('Number of Categories with Data', fontweight='bold')
-        ax4.set_title('Category Coverage by Dataset\n(Green=Full, Orange=Partial, Red=Low)', fontweight='bold')
-        ax4.set_ylim(0, total_categories + 1)
-        ax4.legend(loc='upper right')
-        ax4.grid(axis='y', alpha=0.3)
+        ax6.set_xticks(range(len(dataset_names)))
+        ax6.set_xticklabels(dataset_names, rotation=45, ha='right')
+        ax6.set_ylabel('Number of Categories with Data', fontweight='bold')
+        ax6.set_title('Category Coverage by Dataset\n(Green=Full, Orange=Partial, Red=Low)', fontweight='bold')
+        ax6.set_ylim(0, total_categories + 1)
+        ax6.legend(loc='upper right')
+        ax6.grid(axis='y', alpha=0.3)
 
         plt.suptitle('Dataset Balance Metrics Analysis', fontsize=16, fontweight='bold', y=1.02)
         plt.tight_layout()
