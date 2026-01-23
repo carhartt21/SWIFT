@@ -15,6 +15,7 @@ SWIFT is a GPU-accelerated Python toolkit for filtering and classifying outdoor 
 - **Fog Detection**: Advanced fog detection with counter-prompt margin scoring
 - **CLI Interface**: Easy-to-use command-line tool for batch processing
 - **Caching System**: Smart caching to avoid redundant processing
+- **Dataset Analysis**: Comprehensive visualization with balance metrics (Imbalance Ratio & Shannon Entropy)
 
 ## 🌦️ Weather Categories
 
@@ -104,9 +105,28 @@ SWIFT/
 ├── scripts/
 │   ├── helpers/               # Helper utilities
 │   ├── data_processing/       # Data processing scripts
-│   └── visualization/         # Visualization tools
+│   └── visualization/         # Visualization and analysis tools
+│       ├── weather_dataset_visualizer.py  # Main visualizer
+│       └── test_balance_metrics.py        # Balance metrics tests
 └── docs/                       # Documentation
 ```
+
+## 📊 Dataset Analysis
+
+SWIFT includes a powerful visualization pipeline for analyzing classified datasets:
+
+```bash
+python scripts/visualization/weather_dataset_visualizer.py /path/to/datasets
+```
+
+### Balance Metrics
+
+| Metric | Description | Ideal Value |
+|--------|-------------|-------------|
+| **Imbalance Ratio (IR)** | N_max / N_min between largest and smallest categories | IR = 1 (perfect) |
+| **Normalized Shannon Entropy (H_norm)** | Distribution uniformity on 0-1 scale | H_norm = 1 (uniform) |
+
+See [Visualization Tools](docs/readme_visualizer.md) for full documentation.
 
 ## ⚙️ CLI Options
 

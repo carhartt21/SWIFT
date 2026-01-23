@@ -1035,12 +1035,12 @@ def main():
     parser.add_argument("output_dir", help="Output directory for classified images")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for GPU processing (default: 64)")
     parser.add_argument("--max_per_category", type=int, default=0, help="Maximum images per weather category (0 = unlimited)")
-    parser.add_argument("--confidence_threshold", type=float, default=0.1, 
-                       help="Minimum confidence threshold for filtering (improved from 0.1)")
-    parser.add_argument("--margin_threshold", type=float, default=0.01, 
-                       help="Minimum margin between top-1 and top-2 categories")
+    parser.add_argument("--confidence_threshold", type=float, default=0.2, 
+                       help="Minimum confidence threshold for filtering (default: 0.2)")
+    parser.add_argument("--margin_threshold", type=float, default=0.03, 
+                       help="Minimum margin between top-1 and top-2 categories for filtering (default: 0.03)")
     parser.add_argument("--fog_margin_threshold", type=float, default=0.01, 
-                       help="Margin threshold for fog detection vs confounders")
+                       help="Margin threshold for fog detection vs confounders (default: 0.01)")
     parser.add_argument("--force_convert", action="store_true", help="Force LMDB conversion even if exists")
     parser.add_argument("--no_cache", action="store_true", help="Disable scanning cache")
     parser.add_argument("--severe_weather_only", action="store_true", 

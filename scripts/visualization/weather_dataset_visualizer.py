@@ -15,6 +15,7 @@ Date: October 2025
 
 import os
 import json
+import math
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -25,6 +26,17 @@ warnings.filterwarnings('ignore')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.gridspec import GridSpec
+
+# Solve compatibility issue with newer matplotlib and older seaborn
+import matplotlib.cm as cm
+if not hasattr(cm, 'register_cmap'):
+    def register_cmap(name, cmap=None, **kwargs):
+        if cmap is None:
+            plt.colormaps.register(name)
+        else:
+            plt.colormaps.register(cmap, name=name)
+    cm.register_cmap = register_cmap
+
 import seaborn as sns
 
 # Set style for better-looking plots
@@ -62,7 +74,13 @@ class WeatherDatasetVisualizer:
         self.parent_folder = Path(parent_folder)
         self.datasets = {}
         self.weather_categories = ['clear_day', 'foggy', 'snowy', 'night', 'rainy', 'dawn_dusk', 'cloudy']
-        self.excluded_datasets = ['SEVERE', 'SEVERE_WEATHER']  # Datasets to ignore
+        self.excluded_datasets = ['SEVERE', 'SEVERE_WEATHER', 'BDD100k']  # Datasets to ignore
+        
+        # Filename patterns to exclude per dataset (e.g., ACDC reference images)
+        self.filename_exclusion_patterns = {
+            'ACDC': ['_ref'],  # Exclude reference images in ACDC dataset
+        }
+        
         self.output_folder = Path(parent_folder) / 'analysis_output'
         self.output_folder.mkdir(exist_ok=True)
 
@@ -111,6 +129,7 @@ class WeatherDatasetVisualizer:
                     subdir / 'images',
                     subdir / 'categories' / 'original_size',
                     subdir / 'categories',
+                    subdir,
                 ]
                 for path in possible_paths:
                     if path.exists() and path.is_dir():
@@ -141,6 +160,7 @@ class WeatherDatasetVisualizer:
             self.parent_folder / dataset_name / 'images',
             self.parent_folder / dataset_name / 'categories' / 'original_size',
             self.parent_folder / dataset_name / 'categories',
+            self.parent_folder / dataset_name,
         ]
         for path in possible_paths:
             if path.exists() and path.is_dir():
@@ -149,6 +169,27 @@ class WeatherDatasetVisualizer:
                     if (path / category).exists():
                         return path
         return None
+
+    def _should_exclude_file(self, filepath, dataset_name):
+        """
+        Check if a file should be excluded based on dataset-specific patterns.
+
+        Parameters:
+            filepath (Path): Path to the file
+            dataset_name (str): Name of the dataset
+
+        Returns:
+            bool: True if the file should be excluded, False otherwise
+        """
+        exclusion_patterns = self.filename_exclusion_patterns.get(dataset_name, [])
+        if not exclusion_patterns:
+            return False
+        
+        filename = filepath.stem  # Get filename without extension
+        for pattern in exclusion_patterns:
+            if pattern in filename:
+                return True
+        return False
 
     def load_dataset_stats(self, dataset_name):
         """
@@ -172,15 +213,20 @@ class WeatherDatasetVisualizer:
             if not cat_dir.exists() or not cat_dir.is_dir():
                 continue
 
-            # Prefer counting metadata JSON files if present
-            json_count = len(list(cat_dir.glob('*.json')))
+            # Prefer counting metadata JSON files if present (excluding filtered files)
+            json_files = [f for f in cat_dir.glob('*.json') 
+                         if not self._should_exclude_file(f, dataset_name)]
+            json_count = len(json_files)
 
             if json_count > 0:
                 count = json_count
             else:
-                # Fallback: count image files by common extensions
+                # Fallback: count image files by common extensions (excluding filtered files)
                 try:
-                    count = sum(1 for p in cat_dir.iterdir() if p.is_file() and p.suffix.lower() in img_exts)
+                    count = sum(1 for p in cat_dir.iterdir() 
+                               if p.is_file() 
+                               and p.suffix.lower() in img_exts 
+                               and not self._should_exclude_file(p, dataset_name))
                 except Exception:
                     count = 0
 
@@ -223,6 +269,9 @@ class WeatherDatasetVisualizer:
             return metadata_list
 
         for meta_file in category_path.glob('*.json'):
+            # Skip files matching exclusion patterns
+            if self._should_exclude_file(meta_file, dataset_name):
+                continue
             try:
                 with open(meta_file, 'r') as f:
                     metadata = json.load(f)
@@ -322,6 +371,135 @@ class WeatherDatasetVisualizer:
         output_path = self.output_folder / 'category_percentages.csv'
         df.to_csv(output_path, index=False)
         print(f"Saved category percentages table to: {output_path}")
+        return df
+
+    def compute_imbalance_ratio(self, category_counts):
+        """
+        Compute the Imbalance Ratio (IR) for a dataset.
+
+        The Imbalance Ratio quantifies how much the largest domain outnumbers the smallest one.
+        IR = N_max / N_min, where N_max and N_min are the largest and smallest domain counts.
+
+        Parameters:
+            category_counts (dict): Dictionary mapping category names to their counts.
+
+        Returns:
+            float: The imbalance ratio.
+                   - IR = 1 means perfectly balanced (all domains have the same count).
+                   - IR > 1 means some domains are rarer than others.
+                   - IR = +inf (float('inf')) when any domain has zero samples.
+
+        Example:
+            >>> counts = {'clear_day': 100, 'foggy': 50, 'snowy': 100}
+            >>> ir = self.compute_imbalance_ratio(counts)
+            >>> ir  # 100/50 = 2.0
+        """
+        if not category_counts:
+            return float('inf')
+
+        # Get counts for all defined weather categories (use 0 for missing categories)
+        counts = [category_counts.get(cat, 0) for cat in self.weather_categories]
+
+        n_max = max(counts)
+        n_min = min(counts)
+
+        # Edge case: if minimum is 0, return infinity
+        if n_min == 0:
+            return float('inf')
+
+        return n_max / n_min
+
+    def compute_normalized_shannon_entropy(self, category_counts):
+        """
+        Compute the Normalized Shannon Entropy (H_norm) for a dataset.
+
+        Measures how close the domain distribution is to uniform, on a 0-1 scale.
+        H_norm = H / H_max, where H is the Shannon entropy and H_max = log(K).
+
+        Parameters:
+            category_counts (dict): Dictionary mapping category names to their counts.
+
+        Returns:
+            float: The normalized Shannon entropy (0-1 scale).
+                   - H_norm = 1 means perfectly uniform distribution.
+                   - H_norm closer to 0 means more skewed/imbalanced distribution.
+                   - Returns float('nan') if total == 0 or K <= 1.
+
+        Example:
+            >>> counts = {'clear_day': 100, 'foggy': 100, 'snowy': 100}
+            >>> h_norm = self.compute_normalized_shannon_entropy(counts)
+            >>> h_norm  # Should be 1.0 for uniform distribution
+        """
+        # Number of domains (K)
+        k = len(self.weather_categories)
+
+        # Edge case: K <= 1 returns NaN
+        if k <= 1:
+            return float('nan')
+
+        # Get counts for all defined weather categories (use 0 for missing categories)
+        counts = [category_counts.get(cat, 0) for cat in self.weather_categories]
+        total = sum(counts)
+
+        # Edge case: total == 0 returns NaN
+        if total == 0:
+            return float('nan')
+
+        # Compute probabilities
+        probabilities = [c / total for c in counts]
+
+        # Compute Shannon entropy H = -Σ p_i * log(p_i), ignoring terms where p_i = 0
+        h = 0.0
+        for p in probabilities:
+            if p > 0:
+                h -= p * math.log(p)
+
+        # Maximum entropy H_max = log(K)
+        h_max = math.log(k)
+
+        # Normalized entropy
+        h_norm = h / h_max
+
+        return h_norm
+
+    def create_dataset_balance_metrics_table(self):
+        """
+        Create a table with dataset-level balance metrics: Imbalance Ratio and Normalized Shannon Entropy.
+
+        Returns:
+            DataFrame: Table with IR and H_norm for each dataset.
+        """
+        metrics_data = []
+
+        for dataset_name, data in self.datasets.items():
+            if data['stats'] and 'category_counts' in data['stats']:
+                category_counts = data['stats']['category_counts']
+
+                ir = self.compute_imbalance_ratio(category_counts)
+                h_norm = self.compute_normalized_shannon_entropy(category_counts)
+
+                metrics_data.append({
+                    'Dataset': dataset_name,
+                    'Total_Images': data['stats']['total_images'],
+                    'Num_Categories_With_Data': sum(1 for c in self.weather_categories 
+                                                     if category_counts.get(c, 0) > 0),
+                    'Imbalance_Ratio': ir,
+                    'Normalized_Shannon_Entropy': h_norm
+                })
+
+        df = pd.DataFrame(metrics_data)
+
+        # Format the output (handle inf values for display)
+        df['Imbalance_Ratio'] = df['Imbalance_Ratio'].apply(
+            lambda x: 'inf' if x == float('inf') else round(x, 4)
+        )
+        df['Normalized_Shannon_Entropy'] = df['Normalized_Shannon_Entropy'].apply(
+            lambda x: 'NaN' if math.isnan(x) else round(x, 4)
+        )
+
+        output_path = self.output_folder / 'dataset_balance_metrics.csv'
+        df.to_csv(output_path, index=False)
+        print(f"Saved dataset balance metrics table to: {output_path}")
         return df
 
     def create_confidence_statistics_table(self):
@@ -1227,6 +1405,158 @@ class WeatherDatasetVisualizer:
         plt.close()
         print(f"Saved dataset comparison summary to: {output_path}")
 
+    def plot_balance_metrics(self):
+        """
+        Create plots visualizing the dataset balance metrics (IR and H_norm).
+        """
+        print("Generating balance metrics plots...")
+
+        # Collect metrics data
+        metrics_data = []
+        for dataset_name, data in self.datasets.items():
+            if data['stats'] and 'category_counts' in data['stats']:
+                category_counts = data['stats']['category_counts']
+                ir = self.compute_imbalance_ratio(category_counts)
+                h_norm = self.compute_normalized_shannon_entropy(category_counts)
+                metrics_data.append({
+                    'Dataset': dataset_name,
+                    'Imbalance_Ratio': ir,
+                    'H_norm': h_norm,
+                    'Total_Images': data['stats']['total_images'],
+                    'Num_Categories': sum(1 for c in self.weather_categories 
+                                          if category_counts.get(c, 0) > 0)
+                })
+
+        if not metrics_data:
+            print("No data available for balance metrics plotting")
+            return
+
+        # Sort by dataset name
+        metrics_data = sorted(metrics_data, key=lambda x: x['Dataset'].lower())
+        
+        dataset_names = [d['Dataset'] for d in metrics_data]
+        ir_values = [d['Imbalance_Ratio'] for d in metrics_data]
+        h_norm_values = [d['H_norm'] for d in metrics_data]
+        num_categories = [d['Num_Categories'] for d in metrics_data]
+
+        # Create figure with 2x2 subplots
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+        # 1. Imbalance Ratio bar chart
+        ax1 = axes[0, 0]
+        # Replace inf with a large value for visualization, and mark it
+        ir_display = []
+        ir_colors = []
+        max_finite_ir = max([ir for ir in ir_values if ir != float('inf')], default=10)
+        display_cap = max_finite_ir * 1.5 if max_finite_ir > 1 else 10
+        
+        for ir in ir_values:
+            if ir == float('inf'):
+                ir_display.append(display_cap)
+                ir_colors.append('#e74c3c')  # Red for infinite
+            else:
+                ir_display.append(ir)
+                ir_colors.append('#3498db')  # Blue for finite
+        
+        bars = ax1.bar(range(len(dataset_names)), ir_display, color=ir_colors, alpha=0.7, edgecolor='black')
+        
+        # Add value labels
+        for i, (bar, ir) in enumerate(zip(bars, ir_values)):
+            label = '∞' if ir == float('inf') else f'{ir:.2f}'
+            ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
+                    label, ha='center', va='bottom', fontsize=9, fontweight='bold')
+        
+        ax1.axhline(y=1, color='green', linestyle='--', linewidth=2, label='Perfect Balance (IR=1)')
+        ax1.set_xticks(range(len(dataset_names)))
+        ax1.set_xticklabels(dataset_names, rotation=45, ha='right')
+        ax1.set_ylabel('Imbalance Ratio (IR)', fontweight='bold')
+        ax1.set_title('Imbalance Ratio by Dataset\n(Red = Missing Categories)', fontweight='bold')
+        ax1.legend(loc='upper right')
+        ax1.grid(axis='y', alpha=0.3)
+
+        # 2. Normalized Shannon Entropy bar chart
+        ax2 = axes[0, 1]
+        # Replace NaN with 0 for visualization
+        h_display = [0 if math.isnan(h) else h for h in h_norm_values]
+        h_colors = ['#95a5a6' if math.isnan(h) else '#2ecc71' for h in h_norm_values]
+        
+        bars = ax2.bar(range(len(dataset_names)), h_display, color=h_colors, alpha=0.7, edgecolor='black')
+        
+        # Add value labels
+        for i, (bar, h) in enumerate(zip(bars, h_norm_values)):
+            label = 'NaN' if math.isnan(h) else f'{h:.3f}'
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02, 
+                    label, ha='center', va='bottom', fontsize=9, fontweight='bold')
+        
+        ax2.axhline(y=1, color='green', linestyle='--', linewidth=2, label='Perfect Uniformity (H_norm=1)')
+        ax2.set_xticks(range(len(dataset_names)))
+        ax2.set_xticklabels(dataset_names, rotation=45, ha='right')
+        ax2.set_ylabel('Normalized Shannon Entropy (H_norm)', fontweight='bold')
+        ax2.set_title('Normalized Shannon Entropy by Dataset\n(Higher = More Balanced)', fontweight='bold')
+        ax2.set_ylim(0, 1.15)
+        ax2.legend(loc='upper right')
+        ax2.grid(axis='y', alpha=0.3)
+
+        # 3. IR vs H_norm scatter plot
+        ax3 = axes[1, 0]
+        # Filter out inf and nan for scatter plot
+        valid_data = [(d['Dataset'], d['Imbalance_Ratio'], d['H_norm'], d['Num_Categories']) 
+                      for d in metrics_data 
+                      if d['Imbalance_Ratio'] != float('inf') and not math.isnan(d['H_norm'])]
+        
+        if valid_data:
+            names, irs, h_norms, num_cats = zip(*valid_data)
+            scatter = ax3.scatter(irs, h_norms, c=num_cats, cmap='viridis', 
+                                 s=150, alpha=0.7, edgecolors='black')
+            
+            # Add labels for each point
+            for name, ir, h in zip(names, irs, h_norms):
+                ax3.annotate(name, (ir, h), textcoords="offset points", 
+                            xytext=(5, 5), ha='left', fontsize=8)
+            
+            cbar = plt.colorbar(scatter, ax=ax3)
+            cbar.set_label('Number of Categories', fontweight='bold')
+        
+        ax3.axhline(y=1, color='green', linestyle='--', alpha=0.5, label='Perfect H_norm')
+        ax3.axvline(x=1, color='blue', linestyle='--', alpha=0.5, label='Perfect IR')
+        ax3.set_xlabel('Imbalance Ratio (IR)', fontweight='bold')
+        ax3.set_ylabel('Normalized Shannon Entropy (H_norm)', fontweight='bold')
+        ax3.set_title('IR vs H_norm\n(Lower-right = Ideal Balance)', fontweight='bold')
+        ax3.legend(loc='upper right')
+        ax3.grid(alpha=0.3)
+
+        # 4. Category coverage summary
+        ax4 = axes[1, 1]
+        total_categories = len(self.weather_categories)
+        coverage_pct = [n / total_categories * 100 for n in num_categories]
+        
+        colors = ['#2ecc71' if n == total_categories else '#f39c12' if n >= 5 else '#e74c3c' 
+                  for n in num_categories]
+        
+        bars = ax4.bar(range(len(dataset_names)), num_categories, color=colors, alpha=0.7, edgecolor='black')
+        ax4.axhline(y=total_categories, color='green', linestyle='--', linewidth=2, 
+                   label=f'Full Coverage ({total_categories} categories)')
+        
+        # Add percentage labels
+        for bar, pct in zip(bars, coverage_pct):
+            ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
+                    f'{pct:.0f}%', ha='center', va='bottom', fontsize=9)
+        
+        ax4.set_xticks(range(len(dataset_names)))
+        ax4.set_xticklabels(dataset_names, rotation=45, ha='right')
+        ax4.set_ylabel('Number of Categories with Data', fontweight='bold')
+        ax4.set_title('Category Coverage by Dataset\n(Green=Full, Orange=Partial, Red=Low)', fontweight='bold')
+        ax4.set_ylim(0, total_categories + 1)
+        ax4.legend(loc='upper right')
+        ax4.grid(axis='y', alpha=0.3)
+
+        plt.suptitle('Dataset Balance Metrics Analysis', fontsize=16, fontweight='bold', y=1.02)
+        plt.tight_layout()
+        output_path = self.plots_folder / 'balance_metrics.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Saved balance metrics plot to: {output_path}")
+
     def generate_all_plots(self):
         """
         Generate all visualization plots.
@@ -1279,6 +1609,11 @@ class WeatherDatasetVisualizer:
             self.plot_dataset_comparison_summary()
         except Exception as e:
             print(f"Error generating dataset comparison summary: {e}")
+
+        try:
+            self.plot_balance_metrics()
+        except Exception as e:
+            print(f"Error generating balance metrics plots: {e}")
 
         print("\n" + "=" * 80)
         print("ALL PLOTS GENERATED!")
@@ -1362,6 +1697,7 @@ class WeatherDatasetVisualizer:
         print("\nGenerating CSV tables...")
         self.create_category_distribution_table()
         self.create_category_percentages_table()
+        self.create_dataset_balance_metrics_table()
         self.create_confidence_statistics_table()
         self.create_fog_analysis_table()
         self.create_outdoor_confidence_table()
