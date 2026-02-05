@@ -105,6 +105,7 @@ SWIFT/
 ├── scripts/
 │   ├── helpers/               # Helper utilities
 │   ├── data_processing/       # Data processing scripts
+│   │   └── layout_diversity_score.py  # Layout diversity analysis
 │   └── visualization/         # Visualization and analysis tools
 │       ├── weather_dataset_visualizer.py  # Main visualizer
 │       └── test_balance_metrics.py        # Balance metrics tests
@@ -127,6 +128,82 @@ python scripts/visualization/weather_dataset_visualizer.py /path/to/datasets
 | **Normalized Shannon Entropy (H_norm)** | Distribution uniformity on 0-1 scale | H_norm = 1 (uniform) |
 
 See [Visualization Tools](docs/readme_visualizer.md) for full documentation.
+
+## 🎯 Layout Diversity Score
+
+SWIFT includes a **Layout Diversity Score** tool for analyzing the semantic layout diversity of segmentation datasets. This metric uses Spatial Pyramid Matching (SPM) to measure how varied the scene compositions are across a dataset.
+
+### Quick Start
+
+```bash
+# Basic usage
+python scripts/data_processing/layout_diversity_score.py /path/to/labels --num-classes 35
+
+# With visualization
+python scripts/data_processing/layout_diversity_score.py /path/to/labels \
+    --num-classes 35 \
+    --num-samples 100 \
+    --output results.npz \
+    --visualize
+
+# For variable-sized images (e.g., Mapillary)
+python scripts/data_processing/layout_diversity_score.py /path/to/labels \
+    --num-classes 66 \
+    --resize 512 1024
+```
+
+### CLI Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--num-classes, -c` | 35 | Number of semantic classes |
+| `--num-samples, -n` | 100 | Images to analyze (-1 for all) |
+| `--levels, -l` | 0 1 2 3 | Pyramid levels (1×1, 2×2, 4×4, 8×8) |
+| `--pattern, -p` | *.png | Glob pattern (supports ** for recursive) |
+| `--resize, -r` | None | Resize to (H, W) for variable-sized datasets |
+| `--output, -o` | None | Save results to .npz file |
+| `--visualize, -v` | False | Generate heatmap and distribution plots |
+
+### Python API
+
+```python
+from scripts.data_processing.layout_diversity_score import analyze_dataset, compute_layout_similarity
+
+# High-level analysis
+results, similarity_matrix = analyze_dataset(
+    labels_dir="/path/to/labels",
+    num_classes=35,
+    num_samples=100
+)
+print(f"Diversity Score: {results['diversity_score']:.4f}")
+
+# Low-level API for custom workflows
+import numpy as np
+masks = np.array([...])  # (N, H, W) array of segmentation masks
+sim_matrix, avg_sim, diversity = compute_layout_similarity(masks, num_classes=35)
+```
+
+### Interpretation
+
+| Diversity Score | Interpretation |
+|-----------------|----------------|
+| 0.0 - 0.3 | Low diversity (very similar layouts) |
+| 0.3 - 0.5 | Moderate-low diversity |
+| 0.5 - 0.7 | Moderate diversity |
+| 0.7 - 1.0 | High diversity (varied layouts) |
+
+### Benchmark Results
+
+| Dataset | Images | Classes | Diversity Score |
+|---------|--------|---------|-----------------|
+| OUTSIDE15k | 14,884 | 24 | **0.8054** (Most Diverse) |
+| BDD10k | 8,000 | 19 | **0.6605** |
+| Mapillary | 20,000 | 66 | **0.6508** |
+| ACDC | 2,006 | 34 | **0.5646** |
+| IDD | 7,859 | 27 | **0.5572** |
+| Cityscapes | 3,475 | 34 | **0.4736** (Least Diverse) |
+
+> **Note**: Use only fully-annotated splits (train/val). Test sets may have placeholder annotations.
 
 ## ⚙️ CLI Options
 
